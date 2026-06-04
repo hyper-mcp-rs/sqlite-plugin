@@ -51,6 +51,21 @@ jobs:
         shell: bash
         run: cargo install cargo-auditable
 
+      - name: Install WASI SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Needed to cross-compile rusqlite's bundled SQLite C sources to wasm32-wasip1.
+          WASI_SDK_VERSION_MAJOR=33
+          WASI_SDK_VERSION=33.0
+          curl -fsSL -o /tmp/wasi-sdk.tar.gz \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION_MAJOR}/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux.tar.gz"
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf /tmp/wasi-sdk.tar.gz -C /opt/wasi-sdk --strip-components=1
+          echo "WASI_SDK_PATH=/opt/wasi-sdk" >> "$GITHUB_ENV"
+          echo "CC_wasm32_wasip1=/opt/wasi-sdk/bin/clang" >> "$GITHUB_ENV"
+          echo "AR_wasm32_wasip1=/opt/wasi-sdk/bin/llvm-ar" >> "$GITHUB_ENV"
+
       - name: Build wasm (auditable)
         shell: bash
         run: |
