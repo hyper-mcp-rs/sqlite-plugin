@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -42,38 +42,18 @@ jobs:
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: nightly
           fetch-depth: 0
           submodules: true
 
-      - name: Install Rust 1.92 toolchain + wasm target
+      - name: Install Rust toolchain + wasm target
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.92"
+          toolchain: "1.96"
           components: rustc rust-std cargo clippy rustfmt
           targets: wasm32-wasip1
-
-      - name: Install WASI SDK
-        run: |
-          WASI_VERSION=25
-          WASI_VERSION_FULL=25.0
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "x86_64" ]; then
-            WASI_ARCH=x86_64
-          elif [ "$ARCH" = "aarch64" ]; then
-            WASI_ARCH=arm64
-          else
-            echo "Unsupported architecture: $ARCH" && exit 1
-          fi
-          cd /opt
-          sudo wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz
-          sudo tar xvf wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz
-          sudo rm wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux.tar.gz
-          sudo mv wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-linux wasi-sdk
-          echo "WASI_SDK_PATH=/opt/wasi-sdk" >> $GITHUB_ENV
-          echo "CC_wasm32_wasip1=/opt/wasi-sdk/bin/clang --sysroot=/opt/wasi-sdk/share/wasi-sysroot" >> $GITHUB_ENV
 
       - name: Show active toolchain
         shell: bash
@@ -91,8 +71,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch
-          cargo auditable build --release --target wasm32-wasip1
+          cargo +1.96 fetch
+          cargo +1.96 auditable build --release --target wasm32-wasip1
           cp target/wasm32-wasip1/release/plugin.wasm ./plugin.wasm
 
       - name: Ensure plugin.wasm exists
@@ -109,7 +89,7 @@ jobs:
           echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Upload wasm artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: plugin-wasm
           path: plugin.wasm
@@ -128,16 +108,16 @@ jobs:
       nightly_digest: ${{ steps.digest.outputs.nightly_digest }}
     steps:
       - name: Download wasm artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: plugin-wasm
           path: .
 
       - name: Install ORAS
-        uses: oras-project/setup-oras@v1
+        uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
 
       - name: ORAS login to GHCR
         shell: bash
@@ -194,17 +174,54 @@ jobs:
           IMAGE="ghcr.io/${{ github.repository }}"
           cosign sign --yes "${IMAGE}@${{ steps.digest.outputs.nightly_digest }}"
 
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+
+      - name: Generate CycloneDX SBOM
+        run: cargo cyclonedx -f json --all-features --override-filename temp
+
+      - name: Clean SBOM
+        run: jq '
+          del(.metadata.component."bom-ref")
+          | del(.metadata.component.purl)
+          | del(.metadata.component.components[0]."bom-ref")
+          | del(.metadata.component.components[0].purl)
+          ' temp.json > sbom.cdx.json
+
+      - name: Upload sbom artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sbom-cdx-json
+          path: sbom.cdx.json
+          if-no-files-found: error
+
   publish-nightly-release:
     name: Publish nightly GitHub Release
-    needs: publish-oras
+    needs: [publish-oras, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download plugin.wasm artifact
-        uses: actions/download-artifact@v4
+      - name: Download wasm artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: plugin-wasm
+          path: .
+
+      - name: Download sbom artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom-cdx-json
           path: .
 
       - name: Create release notes
@@ -226,6 +243,7 @@ jobs:
 
           Release asset:
           - \`plugin.wasm\`
+          - \`sbom.cdx.json\`
 
           Pull with ORAS:
           \`\`\`bash
@@ -243,7 +261,7 @@ jobs:
           EOF
 
       - name: Create new nightly release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: nightly
           name: Nightly build (ORAS)
@@ -254,3 +272,4 @@ jobs:
           body_path: release-body.md
           files: |
             plugin.wasm
+            sbom.cdx.json
